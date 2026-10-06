@@ -30,4 +30,11 @@ export CLASSPATH="$HOST/classes:$OUT/classes:$JUNIT:$HAMCREST"
 export PYTHONPATH="$HOST/py:$TESTPY"
 export LD_LIBRARY_PATH="$HOST/lib:$JDK/lib/server"
 cd "$TESTPY"
-exec "$PY" -m unittest "${@:-chaquopy.test}"
+"$PY" -m unittest "${@:-chaquopy.test}"
+
+[ $# -gt 0 ] && exit 0
+PYLIB="$($PY -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR") + "/" + sysconfig.get_config_var("LDLIBRARY"))')"
+LD_PRELOAD="$PYLIB" "$JDK/bin/java" -Djava.library.path="$HOST/lib" org.junit.runner.JUnitCore \
+    com.chaquo.java.GenericPlatformTest com.chaquo.java.ListTest com.chaquo.java.MapTest \
+    com.chaquo.java.PyObjectTest com.chaquo.java.PythonTest com.chaquo.java.SetTest \
+    com.chaquo.java.StaticProxyTest

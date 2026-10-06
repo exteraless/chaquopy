@@ -171,6 +171,30 @@ def build_tests():
             Task()
         return n
 
+    BenchHelper = jclass("BenchHelper")
+    def py_noop(arg):
+        pass
+
+    def py_hook(param):
+        param.args
+        param.getResult()
+
+    noop_obj = py_noop
+    hook_obj = py_hook
+    same_arg = Point(1, 2)
+
+    def call_same(n):
+        return BenchHelper.callSame(noop_obj, same_arg, n)
+
+    def call_fresh(n):
+        return BenchHelper.callFresh(noop_obj, n)
+
+    def call_hook(n):
+        return BenchHelper.callFresh(hook_obj, n)
+
+    def call_int(n):
+        return BenchHelper.callInt(noop_obj, n)
+
     tests = [
         ("find_class", find_class), ("static_call", static_call),
         ("static_call_args", static_call_args), ("instance_call", instance_call),
@@ -180,6 +204,8 @@ def build_tests():
         ("arraylist_add_get", arraylist), ("hashmap_put_get", hashmap),
         ("jarray_create_per_elem", jarray_create), ("java_to_python_consumer", consumer),
         ("java_to_python_comparator", comparator), ("dynamic_proxy_create", proxy_create),
+        ("java_call_same_obj", call_same), ("java_call_fresh_obj", call_fresh),
+        ("java_call_hook_like", call_hook), ("java_call_int", call_int),
     ]
     return tests
 

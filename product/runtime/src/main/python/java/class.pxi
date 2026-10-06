@@ -9,6 +9,7 @@ global_class("java.lang.reflect.InvocationTargetException")
 
 cdef class_lock = RLock()
 cdef dict jclass_cache = {}
+cdef unsigned long jclass_gen = 0
 cdef instance_cache = WeakValueDictionary()
 # class_lock also protects none_casts in utils.pxi.
 
@@ -101,6 +102,8 @@ class JavaClass(type):
         cls = type.__new__(metacls, cls_name, bases, cls_dict)
         cls.__qualname__ = cls.__name__  # Otherwise repr(Object) would contain "JavaObject".
         jclass_cache[java_name] = cls
+        global jclass_gen
+        jclass_gen += 1
         return cls
 
     # We do this in JavaClass.__call__ rather than JavaObject.__new__ because there's no way

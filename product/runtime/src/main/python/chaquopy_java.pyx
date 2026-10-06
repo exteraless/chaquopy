@@ -332,14 +332,22 @@ cdef jlong call(JNIEnv *j_env, obj, jobject jargs) except? 0:
     if jargs == NULL:
         # User typed ".call(null)", which Java interprets as a null array, rather than the
         # array of one null which they intended.
-        all_args = [None]
-    else:
-        all_args = java.jarray("Ljava/lang/Object;")(instance=LocalRef.create(j_env, jargs))
+        return p2j_pyobject(j_env, obj(None))
 
-    Kwarg = java.jclass("com.chaquo.python.Kwarg")
+    cdef jsize n = j_env[0].GetArrayLength(j_env, jargs)
+    cdef jsize i
+    if n == 0:
+        return p2j_pyobject(j_env, obj())
+    if n == 1:
+        a = j2p(j_env, LocalRef.adopt(j_env, j_env[0].GetObjectArrayElement(j_env, jargs, 0)))
+        if not isinstance(a, kwarg_class()):
+            return p2j_pyobject(j_env, obj(a))
+
+    Kwarg = kwarg_class()
     args = []
     kwargs = {}
-    for a in all_args:
+    for i in range(n):
+        a = j2p(j_env, LocalRef.adopt(j_env, j_env[0].GetObjectArrayElement(j_env, jargs, i)))
         if isinstance(a, Kwarg):
             if a.key in kwargs:
                 raise SyntaxError(f"keyword argument repeated: '{a.key}'")
@@ -350,6 +358,15 @@ cdef jlong call(JNIEnv *j_env, obj, jobject jargs) except? 0:
             args.append(a)
 
     return p2j_pyobject(j_env, obj(*args, **kwargs))
+
+
+cdef object Kwarg_cls = None
+
+cdef kwarg_class():
+    global Kwarg_cls
+    if Kwarg_cls is None:
+        Kwarg_cls = java.jclass("com.chaquo.python.Kwarg")
+    return Kwarg_cls
 
 
 # === com.chaquo.python.PyObject (Map) ========================================

@@ -34,6 +34,7 @@ cythonize "$SRC/src/main/python" chaquopy_java.pyx
 
 "$JDK/bin/javac" -nowarn -d "$HOST/classes" -cp "$ANDROID_JAR:$ANNOTATIONS_JAR" \
     $(find "$SRC/src/main/java/com/chaquo/python" -maxdepth 1 -name '*.java')
+"$JDK/bin/javac" -nowarn -d "$HOST/classes" -cp "$HOST/classes" "$HERE/java/BenchHelper.java"
 
 PYINC="$($PY -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
 PYVER="$($PY -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"

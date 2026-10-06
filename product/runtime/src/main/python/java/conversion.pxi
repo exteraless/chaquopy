@@ -78,20 +78,110 @@ cdef populate_args(JavaMethod jm, p2j_args, jvalue *j_args):
 cdef j2p(JNIEnv *j_env, JNIRef j_object):
     if not j_object:
         return None
-    env = CQPEnv.wrap(j_env)
-    j_klass = env.GetObjectClass(j_object)
-
-    sig = klass_sig(env, j_klass)
-    if sig == 'Ljava/lang/String;':
+    cdef KlassInfo info = klass_info(j_env, j_object.obj)
+    cdef int kind = info.kind
+    if kind == KIND_OBJECT:
+        return info.python_class()(instance=j_object)
+    if kind == KIND_STRING:
         return j2p_string(j_env, j_object)
-    if sig == 'Lcom/chaquo/python/PyObject;':
+    if kind == KIND_PYOBJECT:
         return j2p_pyobject(j_env, j_object.obj)
+    return j2p_unbox(j_env, info, j_object.obj)
 
-    unbox_method = UNBOX_METHODS.get(sig)
-    if unbox_method:
-        return getattr(jclass(sig)(instance=j_object), unbox_method)()
 
-    return jclass_from_j_klass(sig, j_klass)(instance=j_object)
+cdef enum:
+    KIND_OBJECT, KIND_STRING, KIND_PYOBJECT,
+    KIND_Z, KIND_B, KIND_C, KIND_S, KIND_I, KIND_J, KIND_F, KIND_D
+
+UNBOX_KINDS = {"Z": KIND_Z, "B": KIND_B, "C": KIND_C, "S": KIND_S,
+               "I": KIND_I, "J": KIND_J, "F": KIND_F, "D": KIND_D}
+
+
+@cython.final
+cdef class KlassInfo(object):
+    cdef GlobalRef klass
+    cdef int kind
+    cdef object sig
+    cdef jmethodID unbox_mid
+    cdef object cls
+    cdef unsigned long cls_gen
+
+    @staticmethod
+    cdef KlassInfo create(CQPEnv env, JNIRef j_klass):
+        cdef KlassInfo self = KlassInfo.__new__(KlassInfo)
+        self.klass = j_klass.global_ref()
+        self.sig = sig = klass_sig(env, j_klass)
+        self.kind = KIND_OBJECT
+        if sig == 'Ljava/lang/String;':
+            self.kind = KIND_STRING
+        elif sig == 'Lcom/chaquo/python/PyObject;':
+            self.kind = KIND_PYOBJECT
+        else:
+            unbox_method = UNBOX_METHODS.get(sig)
+            if unbox_method:
+                unboxed = PRIMITIVES_BY_BOX[sig]
+                self.unbox_mid = env.GetMethodID(j_klass, unbox_method, "()" + unboxed)
+                self.kind = UNBOX_KINDS[unboxed]
+        return self
+
+    cdef python_class(self):
+        cls = self.cls
+        if cls is None or self.cls_gen != jclass_gen:
+            cls = jclass_from_j_klass(self.sig, self.klass)
+            self.cls = cls
+            self.cls_gen = jclass_gen
+        return cls
+
+
+PRIMITIVES_BY_BOX = {f"Ljava/lang/{boxed};": unboxed for unboxed, boxed in PRIMITIVE_TYPES.items()}
+
+DEF KLASS_MRU_SIZE = 4
+cdef list klass_mru = [None] * KLASS_MRU_SIZE
+cdef int klass_mru_next = 0
+cdef dict klass_infos = {}
+
+cdef KlassInfo klass_info(JNIEnv *j_env, jobject obj):
+    global klass_mru_next
+    cdef jobject raw_klass = j_env[0].GetObjectClass(j_env, obj)
+    cdef KlassInfo info
+    cdef int i
+    for i in range(KLASS_MRU_SIZE):
+        info = <KlassInfo>klass_mru[i]
+        if info is not None and j_env[0].IsSameObject(j_env, info.klass.obj, raw_klass):
+            j_env[0].DeleteLocalRef(j_env, raw_klass)
+            return info
+
+    j_klass = LocalRef.adopt(j_env, raw_klass)
+    info = klass_infos.get(j_klass)
+    if info is None:
+        info = KlassInfo.create(CQPEnv.wrap(j_env), j_klass)
+        klass_infos[info.klass] = info
+    klass_mru[klass_mru_next] = info
+    klass_mru_next = (klass_mru_next + 1) % KLASS_MRU_SIZE
+    return info
+
+
+cdef j2p_unbox(JNIEnv *j_env, KlassInfo info, jobject obj):
+    cdef int kind = info.kind
+    cdef jmethodID mid = info.unbox_mid
+    if kind == KIND_I:
+        result = j_env[0].CallIntMethod(j_env, obj, mid)
+    elif kind == KIND_J:
+        result = j_env[0].CallLongMethod(j_env, obj, mid)
+    elif kind == KIND_Z:
+        result = bool(j_env[0].CallBooleanMethod(j_env, obj, mid))
+    elif kind == KIND_D:
+        result = j_env[0].CallDoubleMethod(j_env, obj, mid)
+    elif kind == KIND_F:
+        result = j_env[0].CallFloatMethod(j_env, obj, mid)
+    elif kind == KIND_C:
+        result = chr(j_env[0].CallCharMethod(j_env, obj, mid))
+    elif kind == KIND_S:
+        result = j_env[0].CallShortMethod(j_env, obj, mid)
+    else:
+        result = j_env[0].CallByteMethod(j_env, obj, mid)
+    CQPEnv.wrap(j_env).check_exception()
+    return result
 
 
 # j_string MUST be a (possibly-null) String, or there may be a native crash.
