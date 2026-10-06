@@ -374,17 +374,16 @@ cdef set_this(self, GlobalRef this, real_obj=None):
         is_proxy = isinstance(type(self), ProxyClass)
         PyObject_GenericSetAttr(self, "_chaquopy_this", this.weak_ref() if is_proxy else this)
         PyObject_GenericSetAttr(self, "_chaquopy_real_obj", real_obj)
-        instance_cache.set((type(self), this), self)
 
-        if is_proxy:
-            if isinstance(type(self), DynamicProxyClass) and \
-               dynamic_proxy_attach_dict(self, this):
-                return
+        if is_proxy and not (isinstance(type(self), DynamicProxyClass) and
+                             dynamic_proxy_attach_dict(self, this)):
             java_dict = self._chaquopyGetDict()
             if java_dict is None:
                 self._chaquopySetDict(self.__dict__)
             else:
                 self.__dict__ = java_dict
+
+        instance_cache.set((type(self), this), self)
 
 
 # This isn't done during module initialization because we don't have a JVM yet, and we don't

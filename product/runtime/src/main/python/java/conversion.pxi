@@ -89,6 +89,10 @@ cdef j2p(JNIEnv *j_env, JNIRef j_object):
         cls = info.python_class()
         if info.plain:
             return plain_instance(cls, j_object, info.sig[0] == "[")
+        if info.dyn_proxy:
+            self = instance_cache.get((cls, j_object))
+            if self is not None:
+                return self
         return cls(instance=j_object)
     if kind == KIND_STRING:
         return j2p_string(j_env, j_object)
@@ -114,6 +118,7 @@ cdef class KlassInfo(object):
     cdef object cls
     cdef unsigned long cls_gen
     cdef bint plain
+    cdef bint dyn_proxy
 
     @staticmethod
     cdef KlassInfo create(CQPEnv env, JNIRef j_klass):
@@ -137,8 +142,9 @@ cdef class KlassInfo(object):
         cls = self.cls
         if cls is None or self.cls_gen != jclass_gen:
             cls = jclass_from_j_klass(self.sig, self.klass)
-            self.plain = ((type(cls) is JavaClass or type(cls) is ArrayClass) and
-                          CQPEnv().IsSameObject(cls._chaquopy_j_klass, self.klass))
+            exact = CQPEnv().IsSameObject(cls._chaquopy_j_klass, self.klass)
+            self.plain = exact and (type(cls) is JavaClass or type(cls) is ArrayClass)
+            self.dyn_proxy = exact and type(cls) is DynamicProxyClass
             self.cls = cls
             self.cls_gen = jclass_gen
         return cls

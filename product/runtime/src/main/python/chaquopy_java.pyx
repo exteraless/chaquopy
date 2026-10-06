@@ -329,19 +329,23 @@ cdef public jlong Java_com_chaquo_python_PyObject_callAttrThrowsNative \
 
 
 cdef jlong call(JNIEnv *j_env, obj, jobject jargs) except? 0:
+    return p2j_pyobject(j_env, call_python(j_env, obj, jargs))
+
+
+cdef call_python(JNIEnv *j_env, obj, jobject jargs):
     if jargs == NULL:
         # User typed ".call(null)", which Java interprets as a null array, rather than the
         # array of one null which they intended.
-        return p2j_pyobject(j_env, obj(None))
+        return obj(None)
 
     cdef jsize n = j_env[0].GetArrayLength(j_env, jargs)
     cdef jsize i
     if n == 0:
-        return p2j_pyobject(j_env, obj())
+        return obj()
     if n == 1:
         a = j2p(j_env, LocalRef.adopt(j_env, j_env[0].GetObjectArrayElement(j_env, jargs, 0)))
         if not isinstance(a, kwarg_class()):
-            return p2j_pyobject(j_env, obj(a))
+            return obj(a)
 
     Kwarg = kwarg_class()
     args = []
@@ -357,7 +361,7 @@ cdef jlong call(JNIEnv *j_env, obj, jobject jargs) except? 0:
                 raise SyntaxError("positional argument follows keyword argument")
             args.append(a)
 
-    return p2j_pyobject(j_env, obj(*args, **kwargs))
+    return obj(*args, **kwargs)
 
 
 cdef object Kwarg_cls = None
