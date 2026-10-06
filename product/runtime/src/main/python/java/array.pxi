@@ -288,7 +288,7 @@ cdef class JavaBufferArray(JavaArray):
 
 cdef array_get(self, jint index):
     env = CQPEnv()
-    cdef JNIRef this = self._chaquopy_this
+    cdef JNIRef this = get_this(self)
     r = self._element_sig[0]
     if r == "Z":
         return env.GetBooleanArrayElement(this, index)
@@ -313,7 +313,7 @@ cdef array_get(self, jint index):
 
 cdef array_set(self, jint index, value):
     env = CQPEnv()
-    cdef JNIRef this = self._chaquopy_this
+    cdef JNIRef this = get_this(self)
     # Android's JVM doesn't type-check SetObjectArrayElement calls before API level 16,
     # so we need to check against the actual array type.
     element_sig = object_sig(env, this)[1:]

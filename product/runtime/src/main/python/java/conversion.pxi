@@ -39,8 +39,9 @@ cdef dict_index(d, key):
 # Copy back any modifications the Java method may have made to mutable parameters.
 cdef copy_output_args(CQPEnv env, args, p2j_args):
     for arg, p2j_arg in zip(args, p2j_args):
-        if isinstance(p2j_arg, JNIRef) and p2j_arg:
-            argtype = object_sig(env, p2j_arg)
+        if isinstance(p2j_arg, JNIRef) and p2j_arg and \
+           not isinstance(arg, (unicode, int, float, JavaObject)):
+            argtype = klass_info(env.j_env, (<JNIRef>p2j_arg).obj).sig
             if argtype[0] == "[" and not isinstance(arg, JavaArray):
                 ret = jarray(argtype[1:])(instance=p2j_arg)
                 try:
@@ -81,7 +82,10 @@ cdef j2p(JNIEnv *j_env, JNIRef j_object):
     cdef KlassInfo info = klass_info(j_env, j_object.obj)
     cdef int kind = info.kind
     if kind == KIND_OBJECT:
-        return info.python_class()(instance=j_object)
+        cls = info.python_class()
+        if info.plain:
+            return plain_instance(cls, j_object)
+        return cls(instance=j_object)
     if kind == KIND_STRING:
         return j2p_string(j_env, j_object)
     if kind == KIND_PYOBJECT:
@@ -105,6 +109,7 @@ cdef class KlassInfo(object):
     cdef jmethodID unbox_mid
     cdef object cls
     cdef unsigned long cls_gen
+    cdef bint plain
 
     @staticmethod
     cdef KlassInfo create(CQPEnv env, JNIRef j_klass):
@@ -128,6 +133,8 @@ cdef class KlassInfo(object):
         cls = self.cls
         if cls is None or self.cls_gen != jclass_gen:
             cls = jclass_from_j_klass(self.sig, self.klass)
+            self.plain = (type(cls) is JavaClass and
+                          CQPEnv().IsSameObject(cls._chaquopy_j_klass, self.klass))
             self.cls = cls
             self.cls_gen = jclass_gen
         return cls

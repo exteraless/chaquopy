@@ -1,6 +1,8 @@
 import keyword
 from threading import RLock
-from weakref import WeakValueDictionary
+
+from cpython.object cimport PyObject_GenericGetAttr, PyObject_GenericSetAttr
+from cpython.weakref cimport PyWeakref_NewRef
 
 global_class("java.lang.ClassNotFoundException")
 global_class("java.lang.NoClassDefFoundError")
@@ -10,7 +12,7 @@ global_class("java.lang.reflect.InvocationTargetException")
 cdef class_lock = RLock()
 cdef dict jclass_cache = {}
 cdef unsigned long jclass_gen = 0
-cdef instance_cache = WeakValueDictionary()
+cdef InstanceCache instance_cache = InstanceCache()
 # class_lock also protects none_casts in utils.pxi.
 
 # Attributes which will never be looked up as Java members. This prevents infinite recursion, and is
@@ -223,7 +225,7 @@ cdef setup_object_class():
             if not (name in special_attrs or name in type_dict(cls)):
                 reflect_member(cls, name)
             try:
-                return object.__getattribute__(self, name)
+                return PyObject_GenericGetAttr(self, name)
             except AttributeError:
                 if name.startswith("_chaquopy"):
                     raise AttributeError(f"'{type(self).__name__}' object's superclass __init__ must "
@@ -241,9 +243,9 @@ cdef setup_object_class():
             #   * Exception is a native class, so multiple inheritance with anything which has
             #     __slots__ is impossible ("multiple bases have instance lay-out conflict").
             #   * Exception has a __dict__, which would cause all Java Throwables to have one too.
-            object.__setattr__(self, name, value)
-            if (name in self.__dict__) and not name.startswith("_chaquopy") and \
-               not isinstance(type(self), ProxyClass):
+            PyObject_GenericSetAttr(self, name, value)
+            if not name.startswith("_chaquopy") and not isinstance(type(self), ProxyClass) and \
+               (name in PyObject_GenericGetAttr(self, "__dict__")):
                 del self.__dict__[name]
                 raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
@@ -325,6 +327,18 @@ def get_sam(cls):
                         f"({interfaces}): use cast() to select one")
 
 
+# Equivalent to cls(instance=instance) when cls is a plain JavaClass for exactly the
+# instance's class.
+cdef plain_instance(cls, JNIRef instance):
+    self = None
+    with class_lock:
+        self = instance_cache.get((cls, instance))
+        if self is None:
+            self = cls.__new__(cls)
+            set_this(self, instance.global_ref(), None)
+    return self
+
+
 # Associates a Python object with its Java counterpart.
 #
 # Making _chaquopy_this a WeakRef for proxy objects avoids a cross-language reference
@@ -343,9 +357,9 @@ cdef set_this(self, GlobalRef this, real_obj=None):
     global PyProxy
     with class_lock:
         is_proxy = isinstance(type(self), ProxyClass)
-        self._chaquopy_this = this.weak_ref() if is_proxy else this
-        self._chaquopy_real_obj = real_obj
-        instance_cache[(type(self), this)] = self
+        PyObject_GenericSetAttr(self, "_chaquopy_this", this.weak_ref() if is_proxy else this)
+        PyObject_GenericSetAttr(self, "_chaquopy_real_obj", real_obj)
+        instance_cache.set((type(self), this), self)
 
         if is_proxy:
             java_dict = self._chaquopyGetDict()
@@ -616,7 +630,7 @@ cdef class JavaField(JavaSimpleMember):
     # Cython auto-generates range checking code for the integral types.
     cdef write_field(self, obj, value):
         cdef JNIEnv *j_env = get_jnienv()
-        cdef jobject j_self = (<JNIRef?>obj._chaquopy_this).obj
+        cdef jobject j_self = (<JNIRef?>get_this(obj)).obj
         j_value = p2j(j_env, self.definition, value)
 
         r = self.definition[0]
@@ -647,7 +661,7 @@ cdef class JavaField(JavaSimpleMember):
 
     cdef read_field(self, obj):
         cdef JNIEnv *j_env = get_jnienv()
-        cdef jobject j_self = (<JNIRef?>obj._chaquopy_this).obj
+        cdef jobject j_self = (<JNIRef?>get_this(obj)).obj
         r = self.definition[0]
         if r == 'Z':
             return bool(j_env[0].GetBooleanField(j_env, j_self, self.j_field))
@@ -799,7 +813,7 @@ cdef class JavaMethod(JavaSimpleMember):
         elif obj is None or self.is_static or self.is_constructor:
             return self
         else:
-            return JavaBoundMethod.create(self, obj, obj._chaquopy_real_obj is not None)
+            return JavaBoundMethod.create(self, obj, get_real_obj(obj) is not None)
 
     def __call__(self, *args, virtual=False):
         return self.invoke(args, virtual)
@@ -868,11 +882,11 @@ cdef class JavaMethod(JavaSimpleMember):
 
     cdef call_virtual_method(self, CQPEnv env, obj, p2j_args):
         global Proxy
-        if (Proxy is not None) and isinstance(obj._chaquopy_real_obj or obj, Proxy) and \
+        if (Proxy is not None) and isinstance(get_real_obj(obj) or obj, Proxy) and \
            not (self.cls is JavaObject and self.is_final):  # See comment at call_proxy_method
             return self.call_proxy_method(env, obj, p2j_args)
 
-        cdef JNIRef this = obj._chaquopy_this
+        cdef JNIRef this = get_this(obj)
         cdef jvalue *j_args = <jvalue*>alloca(sizeof(jvalue) * len(p2j_args))
         populate_args(self, p2j_args, j_args)
 
@@ -904,7 +918,7 @@ cdef class JavaMethod(JavaSimpleMember):
         if (Proxy is not None) and issubclass(self.cls, Proxy):
             return self.call_proxy_method(env, obj, p2j_args)
 
-        cdef JNIRef this = obj._chaquopy_this
+        cdef JNIRef this = get_this(obj)
         cdef JNIRef j_klass = self.cls._chaquopy_j_klass
         cdef jvalue *j_args = <jvalue*>alloca(sizeof(jvalue) * len(p2j_args))
         populate_args(self, p2j_args, j_args)
@@ -1048,7 +1062,7 @@ cdef class JavaMultipleMethod(JavaMember):
             return jm.invoke(args, False)
         if jm.is_static or jm.is_constructor:
             return jm.invoke(args, False)
-        return jm.invoke((obj,) + args, obj._chaquopy_real_obj is not None)
+        return jm.invoke((obj,) + args, get_real_obj(obj) is not None)
 
     cdef find_applicable(self, CQPEnv env, obj, args, autobox, varargs):
         result = []
@@ -1112,3 +1126,53 @@ cdef class JavaBoundMultipleMethod(object):
 
     def __repr__(self):
         return f"<bound {self.method!r}>"
+
+
+cdef get_this(obj):
+    try:
+        return PyObject_GenericGetAttr(obj, "_chaquopy_this")
+    except AttributeError:
+        raise AttributeError(f"'{type(obj).__name__}' object's superclass __init__ must "
+                             "be called before using it as a Java object")
+
+
+cdef get_real_obj(obj):
+    try:
+        return PyObject_GenericGetAttr(obj, "_chaquopy_real_obj")
+    except AttributeError:
+        raise AttributeError(f"'{type(obj).__name__}' object's superclass __init__ must "
+                             "be called before using it as a Java object")
+
+
+@cython.final
+cdef class InstanceCache(object):
+    cdef dict data
+
+    def __cinit__(self):
+        self.data = {}
+
+    cdef get(self, key):
+        wr = self.data.get(key)
+        if wr is None:
+            return None
+        return wr()
+
+    cdef set(self, key, value):
+        self.data[key] = PyWeakref_NewRef(value, InstanceCacheRemover.create(self.data, key))
+
+
+@cython.final
+cdef class InstanceCacheRemover(object):
+    cdef dict data
+    cdef object key
+
+    @staticmethod
+    cdef InstanceCacheRemover create(dict data, key):
+        cdef InstanceCacheRemover self = InstanceCacheRemover.__new__(InstanceCacheRemover)
+        self.data = data
+        self.key = key
+        return self
+
+    def __call__(self, wr):
+        if self.data.get(self.key) is wr:
+            del self.data[self.key]
