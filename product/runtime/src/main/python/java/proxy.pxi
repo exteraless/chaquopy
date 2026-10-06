@@ -55,6 +55,12 @@ class DynamicProxyClass(ProxyClass):
     proxy_func = "dynamic_proxy"
 
     def __call__(cls, *args, JNIRef instance=None, **kwargs):
+        if instance:
+            actual_cls = dynamic_proxy_type(instance)
+            if actual_cls is not None and \
+               (actual_cls is cls or CQPEnv().IsInstanceOf(instance, cls._chaquopy_j_klass)):
+                return JavaClass.__call__(actual_cls, instance=instance)
+
         self = JavaClass.__call__(cls, *args, instance=instance, **kwargs)
         if instance:
             # jclass_cache will contain the most recently-created Python class for the given
@@ -75,6 +81,34 @@ class DynamicProxyClass(ProxyClass):
         ProxyClass.add_members(cls)
         for name in ["_chaquopyGetType"]:
             type.__setattr__(cls, name, find_member(cls, name))
+
+
+cdef GlobalRef j_reflect_Proxy = None
+cdef jmethodID mid_getInvocationHandler = NULL
+cdef GlobalRef j_PyInvocationHandler = None
+cdef jfieldID fid_PyInvocationHandler_type = NULL
+
+cdef dynamic_proxy_type(JNIRef instance):
+    global j_reflect_Proxy, mid_getInvocationHandler
+    global j_PyInvocationHandler, fid_PyInvocationHandler_type
+    env = CQPEnv()
+    if mid_getInvocationHandler == NULL:
+        j_reflect_Proxy = env.FindClass("java.lang.reflect.Proxy")
+        j_PyInvocationHandler = env.FindClass("com.chaquo.python.PyInvocationHandler")
+        fid_PyInvocationHandler_type = env.GetFieldID(
+            j_PyInvocationHandler, "type", "Lcom/chaquo/python/PyObject;")
+        mid_getInvocationHandler = env.GetStaticMethodID(
+            j_reflect_Proxy, "getInvocationHandler",
+            "(Ljava/lang/Object;)Ljava/lang/reflect/InvocationHandler;")
+
+    cdef jvalue arg
+    arg.l = instance.obj
+    handler = env.CallStaticObjectMethodA(j_reflect_Proxy, mid_getInvocationHandler, &arg)
+    if not (handler and env.IsInstanceOf(handler, j_PyInvocationHandler)):
+        return None
+    j_type = LocalRef.adopt(env.j_env, env.j_env[0].GetObjectField(
+        env.j_env, handler.obj, fid_PyInvocationHandler_type))
+    return j2p_pyobject(env.j_env, j_type.obj)
 
 
 def DynamicProxy_init(self):
