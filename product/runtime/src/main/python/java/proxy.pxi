@@ -87,16 +87,18 @@ cdef GlobalRef j_reflect_Proxy = None
 cdef jmethodID mid_getInvocationHandler = NULL
 cdef GlobalRef j_PyInvocationHandler = None
 cdef jfieldID fid_PyInvocationHandler_type = NULL
+cdef jfieldID fid_PyInvocationHandler_dict = NULL
 
-cdef dynamic_proxy_type(JNIRef instance):
-    global j_reflect_Proxy, mid_getInvocationHandler
-    global j_PyInvocationHandler, fid_PyInvocationHandler_type
-    env = CQPEnv()
+cdef LocalRef dynamic_proxy_handler(CQPEnv env, JNIRef instance):
+    global j_reflect_Proxy, mid_getInvocationHandler, j_PyInvocationHandler
+    global fid_PyInvocationHandler_type, fid_PyInvocationHandler_dict
     if mid_getInvocationHandler == NULL:
         j_reflect_Proxy = env.FindClass("java.lang.reflect.Proxy")
         j_PyInvocationHandler = env.FindClass("com.chaquo.python.PyInvocationHandler")
         fid_PyInvocationHandler_type = env.GetFieldID(
             j_PyInvocationHandler, "type", "Lcom/chaquo/python/PyObject;")
+        fid_PyInvocationHandler_dict = env.GetFieldID(
+            j_PyInvocationHandler, "dict", "Lcom/chaquo/python/PyObject;")
         mid_getInvocationHandler = env.GetStaticMethodID(
             j_reflect_Proxy, "getInvocationHandler",
             "(Ljava/lang/Object;)Ljava/lang/reflect/InvocationHandler;")
@@ -106,9 +108,32 @@ cdef dynamic_proxy_type(JNIRef instance):
     handler = env.CallStaticObjectMethodA(j_reflect_Proxy, mid_getInvocationHandler, &arg)
     if not (handler and env.IsInstanceOf(handler, j_PyInvocationHandler)):
         return None
+    return handler
+
+cdef dynamic_proxy_type(JNIRef instance):
+    env = CQPEnv()
+    handler = dynamic_proxy_handler(env, instance)
+    if handler is None:
+        return None
     j_type = LocalRef.adopt(env.j_env, env.j_env[0].GetObjectField(
         env.j_env, handler.obj, fid_PyInvocationHandler_type))
     return j2p_pyobject(env.j_env, j_type.obj)
+
+cdef bint dynamic_proxy_attach_dict(self, JNIRef this) except -1:
+    env = CQPEnv()
+    handler = dynamic_proxy_handler(env, this)
+    if handler is None:
+        return False
+    j_dict = LocalRef.adopt(env.j_env, env.j_env[0].GetObjectField(
+        env.j_env, handler.obj, fid_PyInvocationHandler_dict))
+    java_dict = j2p_pyobject(env.j_env, j_dict.obj)
+    if java_dict is None:
+        py_dict = p2j_pyobject_ref(env, PyObject_GenericGetAttr(self, "__dict__"))
+        env.j_env[0].SetObjectField(env.j_env, handler.obj, fid_PyInvocationHandler_dict,
+                                    py_dict.obj)
+    else:
+        PyObject_GenericSetAttr(self, "__dict__", java_dict)
+    return True
 
 
 def DynamicProxy_init(self):

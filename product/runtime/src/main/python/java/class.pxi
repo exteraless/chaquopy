@@ -362,6 +362,9 @@ cdef set_this(self, GlobalRef this, real_obj=None):
         instance_cache.set((type(self), this), self)
 
         if is_proxy:
+            if isinstance(type(self), DynamicProxyClass) and \
+               dynamic_proxy_attach_dict(self, this):
+                return
             java_dict = self._chaquopyGetDict()
             if java_dict is None:
                 self._chaquopySetDict(self.__dict__)
