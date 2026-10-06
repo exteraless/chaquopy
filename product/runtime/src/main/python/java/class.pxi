@@ -20,7 +20,8 @@ cdef set special_attrs = set(dir(type) +                        # Special Python
                               "_chaquopy_sam_name",             #
                               "_chaquopy_this",                 # Chaquopy instance attributes
                               "_chaquopy_real_obj",             #
-                              "_chaquopy_absent"])              # Names known not to be Java members
+                              "_chaquopy_absent",               # Names known not to be Java members
+                              "_chaquopy_abstract"])            # Cached abstract modifier
 
 
 # If you already have a Class object, use one of these functions rather than calling `jclass`
@@ -200,8 +201,13 @@ cdef setup_object_class():
         def __init__(self, *args):
             # Java SE 8 raises an InstantiationException when calling NewObject on an abstract
             # class, but Android 6 crashes with a CheckJNI error.
-            if Modifier.isAbstract(type(self).getClass().getModifiers()):
-                raise TypeError(f"{cls_fullname(type(self))} is abstract and cannot be instantiated")
+            cls = type(self)
+            abstract = type_dict(cls).get("_chaquopy_abstract")
+            if abstract is None:
+                abstract = bool(Modifier.isAbstract(cls.getClass().getModifiers()))
+                type.__setattr__(cls, "_chaquopy_abstract", abstract)
+            if abstract:
+                raise TypeError(f"{cls_fullname(cls)} is abstract and cannot be instantiated")
 
             # Can't use getattr(): Java constructors are not inherited.
             constructor = reflect_member(type(self), "<init>", inherit=False)
@@ -790,9 +796,12 @@ cdef class JavaMethod(JavaSimpleMember):
         elif obj is None or self.is_static or self.is_constructor:
             return self
         else:
-            return lambda *args: self(obj, *args, virtual=(obj._chaquopy_real_obj is not None))
+            return JavaBoundMethod.create(self, obj, obj._chaquopy_real_obj is not None)
 
     def __call__(self, *args, virtual=False):
+        return self.invoke(args, virtual)
+
+    cdef invoke(self, tuple args, bint virtual):
         # Check this up front, because the "unbound method" error that check_args would give
         # would be misleading for an abstract method.
         if self.is_abstract and not virtual:
@@ -988,9 +997,12 @@ cdef class JavaMultipleMethod(JavaMember):
         self.overload_cache = {}
 
     def __get__(self, obj, objtype):
-        return lambda *args: self(obj, objtype, *args)
+        return JavaBoundMultipleMethod.create(self, obj, objtype)
 
     def __call__(self, obj, objtype, *args):
+        return self.invoke(obj, objtype, args)
+
+    cdef invoke(self, obj, objtype, tuple args):
         args_types = tuple(map(type, args))
         obj_args_types = (type(obj), args_types)
         best_overload = self.overload_cache.get(obj_args_types)
@@ -1026,7 +1038,14 @@ cdef class JavaMultipleMethod(JavaMember):
             best_overload = maximal[0]
             self.overload_cache[obj_args_types] = best_overload
 
-        return best_overload.__get__(obj, objtype)(*args)
+        cdef JavaMethod jm = best_overload
+        if obj is None:
+            if jm.name == "getClass" and not jm.is_static:
+                return best_overload.__get__(obj, objtype)(*args)
+            return jm.invoke(args, False)
+        if jm.is_static or jm.is_constructor:
+            return jm.invoke(args, False)
+        return jm.invoke((obj,) + args, obj._chaquopy_real_obj is not None)
 
     cdef find_applicable(self, CQPEnv env, obj, args, autobox, varargs):
         result = []
@@ -1050,3 +1069,43 @@ cdef class JavaMultipleMethod(JavaMember):
         args_type_names = "({})".format(", ".join([type(a).__name__ for a in args]))
         return (f"{self.fqn()} {msg} {args_type_names}: options are " +
                 ", ".join([jm.format_declaration() for jm in methods]))
+
+
+cdef class JavaBoundMethod(object):
+    cdef JavaMethod method
+    cdef object obj
+    cdef bint virtual
+
+    @staticmethod
+    cdef JavaBoundMethod create(JavaMethod method, obj, bint virtual):
+        cdef JavaBoundMethod self = JavaBoundMethod.__new__(JavaBoundMethod)
+        self.method = method
+        self.obj = obj
+        self.virtual = virtual
+        return self
+
+    def __call__(self, *args):
+        return self.method.invoke((self.obj,) + args, self.virtual)
+
+    def __repr__(self):
+        return f"<bound {self.method!r}>"
+
+
+cdef class JavaBoundMultipleMethod(object):
+    cdef JavaMultipleMethod method
+    cdef object obj
+    cdef object objtype
+
+    @staticmethod
+    cdef JavaBoundMultipleMethod create(JavaMultipleMethod method, obj, objtype):
+        cdef JavaBoundMultipleMethod self = JavaBoundMultipleMethod.__new__(JavaBoundMultipleMethod)
+        self.method = method
+        self.obj = obj
+        self.objtype = objtype
+        return self
+
+    def __call__(self, *args):
+        return self.method.invoke(self.obj, self.objtype, args)
+
+    def __repr__(self):
+        return f"<bound {self.method!r}>"
