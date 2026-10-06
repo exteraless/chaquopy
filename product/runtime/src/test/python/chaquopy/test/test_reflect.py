@@ -319,7 +319,9 @@ class TestReflect(FilterWarningsCase):
         Parent = self.nested_cls("Parent")
         Child = self.nested_cls("Child")
 
-        self.assertEqual((object,), Object.__bases__)
+        from java.chaquopy import JavaObjectBase
+        self.assertEqual((JavaObjectBase,), Object.__bases__)
+        self.assertEqual((object,), JavaObjectBase.__bases__)
         self.assertEqual((Object,), Interface.__bases__)
         self.assertEqual((Interface,), SubInterface.__bases__)
         self.assertEqual((Object,), Parent.__bases__)

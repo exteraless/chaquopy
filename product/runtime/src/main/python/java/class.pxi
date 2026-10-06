@@ -3,6 +3,7 @@ from threading import RLock
 
 from cpython.object cimport PyObject_GenericGetAttr, PyObject_GenericSetAttr
 from cpython.weakref cimport PyWeakref_NewRef
+from cpython.type cimport PyType_Modified
 
 global_class("java.lang.ClassNotFoundException")
 global_class("java.lang.NoClassDefFoundError")
@@ -195,12 +196,48 @@ cdef get_bases(klass):
     return tuple(bases)
 
 
+@cython.auto_pickle(False)
+cdef class JavaObjectBase(object):
+    def __getattribute__(self, str name):
+        cls = type(self)
+        if not (name in special_attrs or name in type_dict(cls)):
+            reflect_member(cls, name)
+        try:
+            return PyObject_GenericGetAttr(self, name)
+        except AttributeError:
+            if name.startswith("_chaquopy"):
+                raise AttributeError(f"'{type(self).__name__}' object's superclass __init__ must "
+                                     "be called before using it as a Java object")
+            else:
+                raise
+
+    def __setattr__(self, str name, value):
+        cls = type(self)
+        if not (name in special_attrs or name in type_dict(cls)):
+            reflect_member(cls, name)
+
+        # We can't use __slots__ to prevent adding attributes, because Throwable inherits
+        # from the (Python) Exception class, which causes two problems:
+        #   * Exception is a native class, so multiple inheritance with anything which has
+        #     __slots__ is impossible ("multiple bases have instance lay-out conflict").
+        #   * Exception has a __dict__, which would cause all Java Throwables to have one too.
+        PyObject_GenericSetAttr(self, name, value)
+        if not name.startswith("_chaquopy") and not isinstance(type(self), ProxyClass) and \
+           (name in PyObject_GenericGetAttr(self, "__dict__")):
+            del self.__dict__[name]
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+
 cdef setup_object_class():
+    if "__new__" in type_dict(JavaObjectBase):
+        del (<dict>type_dict(JavaObjectBase))["__new__"]
+        (<PyTypeObject*>JavaObjectBase).tp_new = (<PyTypeObject*>object).tp_new
+        PyType_Modified(JavaObjectBase)
     # We probably can't make this a cdef class, because we need (Java) Throwable to inherit from
     # both JavaObject and (Python) Exception, which is *also* a native class. Multiple inheritance
     # from two native classes would give a "multiple bases have instance lay-out conflict" error.
     global JavaObject
-    class JavaObject(metaclass=JavaClass):
+    class JavaObject(JavaObjectBase, metaclass=JavaClass):
         _chaquopy_name = "java.lang.Object"
 
         def __init__(self, *args):
@@ -219,35 +256,6 @@ cdef setup_object_class():
             if not constructor:
                 raise TypeError(f"{cls_fullname(type(self))} has no accessible constructors")
             set_this(self, constructor.__get__(self, type(self))(*args))
-
-        def __getattribute__(self, str name):
-            cls = type(self)
-            if not (name in special_attrs or name in type_dict(cls)):
-                reflect_member(cls, name)
-            try:
-                return PyObject_GenericGetAttr(self, name)
-            except AttributeError:
-                if name.startswith("_chaquopy"):
-                    raise AttributeError(f"'{type(self).__name__}' object's superclass __init__ must "
-                                         "be called before using it as a Java object")
-                else:
-                    raise
-
-        def __setattr__(self, str name, value):
-            cls = type(self)
-            if not (name in special_attrs or name in type_dict(cls)):
-                reflect_member(cls, name)
-
-            # We can't use __slots__ to prevent adding attributes, because Throwable inherits
-            # from the (Python) Exception class, which causes two problems:
-            #   * Exception is a native class, so multiple inheritance with anything which has
-            #     __slots__ is impossible ("multiple bases have instance lay-out conflict").
-            #   * Exception has a __dict__, which would cause all Java Throwables to have one too.
-            PyObject_GenericSetAttr(self, name, value)
-            if not name.startswith("_chaquopy") and not isinstance(type(self), ProxyClass) and \
-               (name in PyObject_GenericGetAttr(self, "__dict__")):
-                del self.__dict__[name]
-                raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
         def __dir__(self):
             result = set(dir(type(self)))
@@ -328,14 +336,21 @@ def get_sam(cls):
 
 
 cdef plain_instance(cls, JNIRef instance, bint array):
-    self = None
+    key = (cls, instance)
+    self = instance_cache.get(key)
+    if self is not None:
+        return self
     with class_lock:
-        self = instance_cache.get((cls, instance))
+        self = instance_cache.get(key)
         if self is None:
-            self = cls.__new__(cls)
-            set_this(self, instance.global_ref(), None)
+            self = (<type>cls).__new__(cls)
+            this = instance.global_ref()
+            this.hash_code = instance.hash_code
+            PyObject_GenericSetAttr(self, "_chaquopy_this", this)
+            PyObject_GenericSetAttr(self, "_chaquopy_real_obj", None)
             if array:
                 (<JavaArray?>self).length = CQPEnv().GetArrayLength(instance)
+            instance_cache.set((cls, this), self)
     return self
 
 
