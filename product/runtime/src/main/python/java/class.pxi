@@ -211,22 +211,6 @@ cdef class JavaObjectBase(object):
             else:
                 raise
 
-    def __setattr__(self, str name, value):
-        cls = type(self)
-        if not (name in special_attrs or name in type_dict(cls)):
-            reflect_member(cls, name)
-
-        # We can't use __slots__ to prevent adding attributes, because Throwable inherits
-        # from the (Python) Exception class, which causes two problems:
-        #   * Exception is a native class, so multiple inheritance with anything which has
-        #     __slots__ is impossible ("multiple bases have instance lay-out conflict").
-        #   * Exception has a __dict__, which would cause all Java Throwables to have one too.
-        PyObject_GenericSetAttr(self, name, value)
-        if not name.startswith("_chaquopy") and not isinstance(type(self), ProxyClass) and \
-           (name in PyObject_GenericGetAttr(self, "__dict__")):
-            del self.__dict__[name]
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-
 
 cdef setup_object_class():
     if "__new__" in type_dict(JavaObjectBase):
@@ -239,6 +223,22 @@ cdef setup_object_class():
     global JavaObject
     class JavaObject(JavaObjectBase, metaclass=JavaClass):
         _chaquopy_name = "java.lang.Object"
+
+        def __setattr__(self, str name, value):
+            cls = type(self)
+            if not (name in special_attrs or name in type_dict(cls)):
+                reflect_member(cls, name)
+
+            # We can't use __slots__ to prevent adding attributes, because Throwable inherits
+            # from the (Python) Exception class, which causes two problems:
+            #   * Exception is a native class, so multiple inheritance with anything which has
+            #     __slots__ is impossible ("multiple bases have instance lay-out conflict").
+            #   * Exception has a __dict__, which would cause all Java Throwables to have one too.
+            PyObject_GenericSetAttr(self, name, value)
+            if not name.startswith("_chaquopy") and not isinstance(type(self), ProxyClass) and \
+               (name in PyObject_GenericGetAttr(self, "__dict__")):
+                del self.__dict__[name]
+                raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
         def __init__(self, *args):
             # Java SE 8 raises an InstantiationException when calling NewObject on an abstract
