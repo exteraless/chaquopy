@@ -756,6 +756,9 @@ cdef class JavaMethod(JavaSimpleMember):
     cdef bint is_constructor
     cdef bint is_abstract
     cdef bint is_varargs
+    cdef bytes arg_codes
+    cdef char ret_code
+    cdef bint copy_back
 
     def __repr__(self):
         return f"<JavaMethod {self.format_declaration()}>"
@@ -786,6 +789,9 @@ cdef class JavaMethod(JavaSimpleMember):
         super().__init__(cls, name, static, final)
         self.is_abstract = abstract
         self.is_varargs = varargs
+        self.arg_codes = "".join([a[0] for a in self.args_sig]).encode("ascii")
+        self.ret_code = ord(self.return_sig[0])
+        self.copy_back = any([a[0] == "[" or a in ARRAY_CONVERSIONS for a in self.args_sig])
 
         env = CQPEnv()
         cdef JNIRef j_klass = self.cls._chaquopy_j_klass
@@ -829,8 +835,20 @@ cdef class JavaMethod(JavaSimpleMember):
 
         env = CQPEnv()
         obj, args = self.check_args(env, args)
-        p2j_args = [p2j(env.j_env, argtype, arg)
-                    for argtype, arg in zip(self.args_sig, args)]
+        return self.invoke_checked(env, obj, args, virtual)
+
+    cdef invoke_bound(self, obj, tuple args, bint virtual):
+        if self.is_abstract and not virtual:
+            raise NotImplementedError(f"{self.fqn()} is abstract and cannot be called")
+        if self.is_static or self.is_constructor or not isinstance(obj, self.cls):
+            return self.invoke((obj,) + args, virtual)
+
+        env = CQPEnv()
+        return self.invoke_checked(env, obj, self.check_arity(env, args), virtual)
+
+    cdef invoke_checked(self, CQPEnv env, obj, tuple args, bint virtual):
+        cdef list p2j_args = [p2j(env.j_env, argtype, arg)
+                              for argtype, arg in zip(self.args_sig, args)]
 
         if self.is_constructor:
             result = self.call_constructor(env, p2j_args)
@@ -841,7 +859,8 @@ cdef class JavaMethod(JavaSimpleMember):
         else:
             result = self.call_nonvirtual_method(env, obj, p2j_args)
 
-        copy_output_args(env, args, p2j_args)
+        if self.copy_back:
+            copy_output_args(env, args, p2j_args)
         return result
 
     cdef check_args(self, CQPEnv env, args):
@@ -860,7 +879,9 @@ cdef class JavaMethod(JavaSimpleMember):
                 raise TypeError(f"Unbound method {self.fqn()} must be called with "
                                 f"{cls_fullname(self.cls)} instance as first argument "
                                 f"(got {got_wrong} instead)")
+        return obj, self.check_arity(env, args)
 
+    cdef tuple check_arity(self, CQPEnv env, tuple args):
         if self.is_varargs:
             if len(args) < len(self.args_sig) - 1:
                 raise TypeError(f'{self.fqn()} takes at least '
@@ -876,7 +897,7 @@ cdef class JavaMethod(JavaSimpleMember):
         if len(args) != len(self.args_sig):
             raise TypeError(f'{self.fqn()} takes {plural(len(self.args_sig), "argument")} '
                             f'({len(args)} given)')
-        return obj, args
+        return args
 
     cdef GlobalRef call_constructor(self, CQPEnv env, p2j_args):
         cdef jvalue *j_args = <jvalue*>alloca(sizeof(jvalue) * len(p2j_args))
@@ -893,26 +914,26 @@ cdef class JavaMethod(JavaSimpleMember):
         cdef jvalue *j_args = <jvalue*>alloca(sizeof(jvalue) * len(p2j_args))
         populate_args(self, p2j_args, j_args)
 
-        r = self.return_sig[0]
-        if r == 'V':
+        cdef char r = self.ret_code
+        if r == c'V':
             env.CallVoidMethodA(this, self.j_method, j_args)
-        elif r == 'Z':
+        elif r == c'Z':
             return env.CallBooleanMethodA(this, self.j_method, j_args)
-        elif r == 'B':
+        elif r == c'B':
             return env.CallByteMethodA(this, self.j_method, j_args)
-        elif r == 'C':
+        elif r == c'C':
             return env.CallCharMethodA(this, self.j_method, j_args)
-        elif r == 'S':
+        elif r == c'S':
             return env.CallShortMethodA(this, self.j_method, j_args)
-        elif r == 'I':
+        elif r == c'I':
             return env.CallIntMethodA(this, self.j_method, j_args)
-        elif r == 'J':
+        elif r == c'J':
             return env.CallLongMethodA(this, self.j_method, j_args)
-        elif r == 'F':
+        elif r == c'F':
             return env.CallFloatMethodA(this, self.j_method, j_args)
-        elif r == 'D':
+        elif r == c'D':
             return env.CallDoubleMethodA(this, self.j_method, j_args)
-        elif r in 'L[':
+        elif r == c'L' or r == c'[':
             return j2p(env.j_env, env.CallObjectMethodA(this, self.j_method, j_args))
         else:
             raise Exception(f"Invalid definition for {self.fqn()}: '{self.return_sig}'")
@@ -926,26 +947,26 @@ cdef class JavaMethod(JavaSimpleMember):
         cdef jvalue *j_args = <jvalue*>alloca(sizeof(jvalue) * len(p2j_args))
         populate_args(self, p2j_args, j_args)
 
-        r = self.return_sig[0]
-        if r == 'V':
+        cdef char r = self.ret_code
+        if r == c'V':
             env.CallNonvirtualVoidMethodA(this, j_klass, self.j_method, j_args)
-        elif r == 'Z':
+        elif r == c'Z':
             return env.CallNonvirtualBooleanMethodA(this, j_klass, self.j_method, j_args)
-        elif r == 'B':
+        elif r == c'B':
             return env.CallNonvirtualByteMethodA(this, j_klass, self.j_method, j_args)
-        elif r == 'C':
+        elif r == c'C':
             return env.CallNonvirtualCharMethodA(this, j_klass, self.j_method, j_args)
-        elif r == 'S':
+        elif r == c'S':
             return env.CallNonvirtualShortMethodA(this, j_klass, self.j_method, j_args)
-        elif r == 'I':
+        elif r == c'I':
             return env.CallNonvirtualIntMethodA(this, j_klass, self.j_method, j_args)
-        elif r == 'J':
+        elif r == c'J':
             return env.CallNonvirtualLongMethodA(this, j_klass, self.j_method, j_args)
-        elif r == 'F':
+        elif r == c'F':
             return env.CallNonvirtualFloatMethodA(this, j_klass, self.j_method, j_args)
-        elif r == 'D':
+        elif r == c'D':
             return env.CallNonvirtualDoubleMethodA(this, j_klass, self.j_method, j_args)
-        elif r in 'L[':
+        elif r == c'L' or r == c'[':
             return j2p(env.j_env, env.CallNonvirtualObjectMethodA(this, j_klass, self.j_method,
                                                                   j_args))
         else:
@@ -979,26 +1000,26 @@ cdef class JavaMethod(JavaSimpleMember):
         cdef jvalue *j_args = <jvalue*>alloca(sizeof(jvalue) * len(p2j_args))
         populate_args(self, p2j_args, j_args)
 
-        r = self.return_sig[0]
-        if r == 'V':
+        cdef char r = self.ret_code
+        if r == c'V':
             env.CallStaticVoidMethodA(j_klass, self.j_method, j_args)
-        elif r == 'Z':
+        elif r == c'Z':
             return env.CallStaticBooleanMethodA(j_klass, self.j_method, j_args)
-        elif r == 'B':
+        elif r == c'B':
             return env.CallStaticByteMethodA(j_klass, self.j_method, j_args)
-        elif r == 'C':
+        elif r == c'C':
             return env.CallStaticCharMethodA(j_klass, self.j_method, j_args)
-        elif r == 'S':
+        elif r == c'S':
             return env.CallStaticShortMethodA(j_klass, self.j_method, j_args)
-        elif r == 'I':
+        elif r == c'I':
             return env.CallStaticIntMethodA(j_klass, self.j_method, j_args)
-        elif r == 'J':
+        elif r == c'J':
             return env.CallStaticLongMethodA(j_klass, self.j_method, j_args)
-        elif r == 'F':
+        elif r == c'F':
             return env.CallStaticFloatMethodA(j_klass, self.j_method, j_args)
-        elif r == 'D':
+        elif r == c'D':
             return env.CallStaticDoubleMethodA(j_klass, self.j_method, j_args)
-        elif r in 'L[':
+        elif r == c'L' or r == c'[':
             return j2p(env.j_env, env.CallStaticObjectMethodA(j_klass, self.j_method, j_args))
         else:
             raise Exception(f"Invalid definition for {self.fqn()}: '{self.return_sig}'")
@@ -1065,7 +1086,7 @@ cdef class JavaMultipleMethod(JavaMember):
             return jm.invoke(args, False)
         if jm.is_static or jm.is_constructor:
             return jm.invoke(args, False)
-        return jm.invoke((obj,) + args, get_real_obj(obj) is not None)
+        return jm.invoke_bound(obj, args, get_real_obj(obj) is not None)
 
     cdef find_applicable(self, CQPEnv env, obj, args, autobox, varargs):
         result = []
@@ -1105,7 +1126,7 @@ cdef class JavaBoundMethod(object):
         return self
 
     def __call__(self, *args):
-        return self.method.invoke((self.obj,) + args, self.virtual)
+        return self.method.invoke_bound(self.obj, args, self.virtual)
 
     def __repr__(self):
         return f"<bound {self.method!r}>"

@@ -51,28 +51,32 @@ cdef copy_output_args(CQPEnv env, args, p2j_args):
 
 
 # Cython auto-generates range checking code for the integral types.
-cdef populate_args(JavaMethod jm, p2j_args, jvalue *j_args):
-    for index, argtype in enumerate(jm.args_sig):
+cdef populate_args(JavaMethod jm, list p2j_args, jvalue *j_args):
+    cdef const char *codes = jm.arg_codes
+    cdef Py_ssize_t index
+    cdef char c
+    for index in range(len(p2j_args)):
         py_arg = p2j_args[index]
-        if argtype == 'Z':
+        c = codes[index]
+        if c == c'Z':
             j_args[index].z = py_arg
-        elif argtype == 'B':
+        elif c == c'B':
             j_args[index].b = py_arg
-        elif argtype == 'C':
+        elif c == c'C':
             check_range_char(py_arg)
             j_args[index].c = ord(py_arg)
-        elif argtype == 'S':
+        elif c == c'S':
             j_args[index].s = py_arg
-        elif argtype == 'I':
+        elif c == c'I':
             j_args[index].i = py_arg
-        elif argtype == 'J':
+        elif c == c'J':
             j_args[index].j = py_arg
-        elif argtype == 'F':
+        elif c == c'F':
             check_range_float32(py_arg)
             j_args[index].f = py_arg
-        elif argtype == 'D':
+        elif c == c'D':
             j_args[index].d = py_arg
-        elif argtype[0] in 'L[':
+        elif c == c'L' or c == c'[':
             j_args[index].l = (<JNIRef?>py_arg).obj
 
 

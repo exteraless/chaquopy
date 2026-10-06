@@ -1,3 +1,4 @@
+import gc
 import json
 import os
 import sys
@@ -195,6 +196,57 @@ def build_tests():
     def call_int(n):
         return BenchHelper.callInt(noop_obj, n)
 
+    JMath = jclass("java.lang.Math")
+
+    def static_args_overloaded(n):
+        f = JMath.max
+        for i in range(n):
+            f(i, 5)
+        return n
+
+    def static_attr_lookup(n):
+        for _ in range(n):
+            System.nanoTime()
+        return n
+
+    def static_field(n):
+        for _ in range(n):
+            Integer.MAX_VALUE
+        return n
+
+    int_arr = jarray(jint)(list(range(1000)))
+
+    def jarray_read(n):
+        loops = max(1, n // 1000)
+        for _ in range(loops):
+            list(int_arr)
+        return loops * 1000
+
+    def java_exception(n):
+        parse = Integer.parseInt
+        for _ in range(n):
+            try:
+                parse("not a number")
+            except Exception:
+                pass
+        return n
+
+    field_cache = {}
+    priv = ArrayList()
+    priv.add(1)
+
+    def private_get(n):
+        for _ in range(n):
+            klass = priv.getClass()
+            key = (klass, "size")
+            field = field_cache.get(key)
+            if field is None:
+                field = klass.getDeclaredField("size")
+                field.setAccessible(True)
+                field_cache[key] = field
+            field.get(priv)
+        return n
+
     tests = [
         ("find_class", find_class), ("static_call", static_call),
         ("static_call_args", static_call_args), ("instance_call", instance_call),
@@ -206,6 +258,10 @@ def build_tests():
         ("java_to_python_comparator", comparator), ("dynamic_proxy_create", proxy_create),
         ("java_call_same_obj", call_same), ("java_call_fresh_obj", call_fresh),
         ("java_call_hook_like", call_hook), ("java_call_int", call_int),
+        ("static_args_overloaded", static_args_overloaded),
+        ("static_attr_lookup", static_attr_lookup), ("static_field", static_field),
+        ("jarray_read_per_elem", jarray_read), ("java_exception", java_exception),
+        ("private_get", private_get),
     ]
     return tests
 
@@ -214,9 +270,14 @@ def main():
     tests = build_tests()
     only = set(sys.argv[1:])
     results = {}
+    System = jclass("java.lang.System")
     for name, fn in tests:
         if only and name not in only:
             continue
+        gc.collect()
+        System.gc()
+        System.runFinalization()
+        gc.collect()
         results[name] = measure(fn)
         print(f"{name:28s} {results[name] / 1000:10.2f} us", flush=True)
     out = os.environ.get("BENCH_OUT")
