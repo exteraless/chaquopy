@@ -19,7 +19,8 @@ cdef set special_attrs = set(dir(type) +                        # Special Python
                               "_chaquopy_reflector",            #
                               "_chaquopy_sam_name",             #
                               "_chaquopy_this",                 # Chaquopy instance attributes
-                              "_chaquopy_real_obj"])            #
+                              "_chaquopy_real_obj",             #
+                              "_chaquopy_absent"])              # Names known not to be Java members
 
 
 # If you already have a Class object, use one of these functions rather than calling `jclass`
@@ -414,9 +415,26 @@ cdef bootstrap_method(cls, name, signature, static=False):
 # If the class has a declared or inherited Java member of the given name, this function ensures it's
 # in cls.__dict__, and then returns it. Otherwise it returns None.
 cdef reflect_member(cls, str name, bint inherit=True):
+    cdef dict cls_dict = type_dict(cls)
     try:
-        return type_dict(cls)[name]
+        return cls_dict[name]
     except KeyError: pass
+
+    cdef set absent = None
+    if inherit:
+        absent = cls_dict.get("_chaquopy_absent")
+        if absent is not None and name in absent:
+            return None
+    member = reflect_member_uncached(cls, name, inherit)
+    if member is None and inherit:
+        if absent is None:
+            absent = set()
+            type.__setattr__(cls, "_chaquopy_absent", absent)
+        absent.add(name)
+    return member
+
+
+cdef reflect_member_uncached(cls, str name, bint inherit):
 
     inherited = None
     if inherit:

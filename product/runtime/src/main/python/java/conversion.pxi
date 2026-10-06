@@ -327,14 +327,45 @@ cdef JNIRef p2j_box(CQPEnv env, JNIRef j_klass, str box_cls_name, value):
     if isinstance(value, Primitive):
         value = value.value
 
-    # Uniquely among the boxed types, the Float class has two primitive-typed constructors, one
-    # of which takes a double, which our overload resolution will prefer.
     if box_cls_name == "Float":
         check_range_float32(value)
 
-    # This will result in a recursive call to p2j, this time requesting the primitive type of
-    # the constructor parameter. Range checks will be performed by populate_args.
-    return jclass(full_box_cls_name)(value)._chaquopy_this
+    cdef str sig = BOX_PRIMITIVE_SIGS[box_cls_name]
+    cdef jmethodID mid
+    cached = box_value_of.get(box_cls_name)
+    if cached is None:
+        mid = env.GetStaticMethodID(j_box_klass, "valueOf",
+                                    f"({sig})Ljava/lang/{box_cls_name};")
+        box_value_of[box_cls_name] = <size_t>mid
+    else:
+        mid = <jmethodID><size_t>cached
+
+    cdef jvalue arg
+    if sig == "Z":
+        arg.z = value
+    elif sig == "B":
+        arg.b = value
+    elif sig == "C":
+        check_range_char(value)
+        arg.c = ord(value)
+    elif sig == "S":
+        arg.s = value
+    elif sig == "I":
+        arg.i = value
+    elif sig == "J":
+        arg.j = value
+    elif sig == "F":
+        arg.f = value
+    else:
+        arg.d = value
+    return env.CallStaticObjectMethodA(j_box_klass, mid, &arg)
+
+
+cdef dict box_value_of = {}
+cdef dict BOX_PRIMITIVE_SIGS = {
+    "Boolean": "Z", "Byte": "B", "Character": "C", "Short": "S",
+    "Integer": "I", "Long": "J", "Float": "F", "Double": "D",
+}
 
 
 cdef jlong p2j_pyobject(JNIEnv *j_env, obj) except? 0:
