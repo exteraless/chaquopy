@@ -327,15 +327,15 @@ def get_sam(cls):
                         f"({interfaces}): use cast() to select one")
 
 
-# Equivalent to cls(instance=instance) when cls is a plain JavaClass for exactly the
-# instance's class.
-cdef plain_instance(cls, JNIRef instance):
+cdef plain_instance(cls, JNIRef instance, bint array):
     self = None
     with class_lock:
         self = instance_cache.get((cls, instance))
         if self is None:
             self = cls.__new__(cls)
             set_this(self, instance.global_ref(), None)
+            if array:
+                (<JavaArray?>self).length = CQPEnv().GetArrayLength(instance)
     return self
 
 

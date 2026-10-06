@@ -84,7 +84,7 @@ cdef j2p(JNIEnv *j_env, JNIRef j_object):
     if kind == KIND_OBJECT:
         cls = info.python_class()
         if info.plain:
-            return plain_instance(cls, j_object)
+            return plain_instance(cls, j_object, info.sig[0] == "[")
         return cls(instance=j_object)
     if kind == KIND_STRING:
         return j2p_string(j_env, j_object)
@@ -133,7 +133,7 @@ cdef class KlassInfo(object):
         cls = self.cls
         if cls is None or self.cls_gen != jclass_gen:
             cls = jclass_from_j_klass(self.sig, self.klass)
-            self.plain = (type(cls) is JavaClass and
+            self.plain = ((type(cls) is JavaClass or type(cls) is ArrayClass) and
                           CQPEnv().IsSameObject(cls._chaquopy_j_klass, self.klass))
             self.cls = cls
             self.cls_gen = jclass_gen
