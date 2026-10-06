@@ -4,6 +4,8 @@ from threading import RLock
 from cpython.object cimport PyObject_GenericGetAttr, PyObject_GenericSetAttr
 from cpython.weakref cimport PyWeakref_NewRef
 from cpython.type cimport PyType_Modified
+cdef extern from "Python.h":
+    object PyMethod_New(object func, object self)
 
 global_class("java.lang.ClassNotFoundException")
 global_class("java.lang.NoClassDefFoundError")
@@ -11,6 +13,7 @@ global_class("java.lang.reflect.InvocationTargetException")
 
 
 cdef class_lock = RLock()
+cdef object call_fallback = None
 cdef dict jclass_cache = {}
 cdef unsigned long jclass_gen = 0
 cdef InstanceCache instance_cache = InstanceCache()
@@ -140,7 +143,15 @@ class JavaClass(type):
                         real_obj = real_cls(instance=instance)
                     set_this(self, instance.global_ref(), real_obj)
         else:
-            self = type.__call__(cls, *args, **kwargs)  # May block
+            try:
+                self = type.__call__(cls, *args, **kwargs)  # May block
+            except TypeError:
+                if call_fallback is None or kwargs or len(args) != 1:
+                    raise
+                fallback = call_fallback(cls, args[0])
+                if fallback is None:
+                    raise
+                return fallback
 
         return self
 
@@ -1214,3 +1225,52 @@ cdef class InstanceCacheRemover(object):
     def __call__(self, wr):
         if self.data.get(self.key) is wr:
             del self.data[self.key]
+
+
+def set_call_fallback(fallback):
+    global call_fallback
+    call_fallback = fallback
+
+
+@cython.final
+cdef class GuardedMethod(object):
+    cdef readonly object __wrapped__
+    cdef object default
+    cdef object on_error
+
+    def __init__(self, fn, default=None, on_error=None):
+        self.__wrapped__ = fn
+        self.default = default
+        self.on_error = on_error
+
+    def __get__(self, obj, objtype):
+        if obj is None:
+            return self
+        return PyMethod_New(self, obj)
+
+    def __call__(self, *args, **kwargs):
+        try:
+            return self.__wrapped__(*args, **kwargs)
+        except Exception as e:
+            if self.on_error is not None:
+                self.on_error(e)
+            return self.default
+
+    @property
+    def __name__(self):
+        return getattr(self.__wrapped__, "__name__", type(self).__name__)
+
+    @property
+    def __qualname__(self):
+        return getattr(self.__wrapped__, "__qualname__", self.__name__)
+
+    @property
+    def __module__(self):
+        return getattr(self.__wrapped__, "__module__", None)
+
+    @property
+    def _exteraless_guarded(self):
+        return True
+
+    def __repr__(self):
+        return f"<guarded {self.__wrapped__!r}>"
