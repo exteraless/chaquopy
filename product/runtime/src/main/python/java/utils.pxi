@@ -30,6 +30,29 @@ cdef load_global_classes():
     global_classes.clear()
 
 
+cdef str reflection_normalize_name(str name):
+    while name.startswith("["):
+        name = name[1:]
+    if len(name) > 2 and name.startswith("L") and name.endswith(";"):
+        name = name[1:-1]
+    if not name or len(name) == 1:
+        return None
+    return name.replace("/", ".")
+
+
+cdef reflection_cast_target(cls):
+    cdef str name
+    if isinstance(cls, JavaClass):
+        name = cls_fullname(cls)
+        if name.startswith("java.jarray('") and name.endswith("')"):
+            name = name[len("java.jarray('"):-2]
+    elif isinstance(cls, str):
+        name = cls
+    else:
+        return None
+    return reflection_normalize_name(name)
+
+
 # I considered whether to make `cast` aliases clearly distinguishable from plain objects, by
 # generalizing `NoneCast` to `Cast`, and giving it a `repr` of `cast('<jni-signature>',
 # repr(<underlying-object>))`. However, this would be a major change for no clear benefit.
@@ -45,6 +68,10 @@ cpdef cast(cls, obj):
     * Different members may be visible on the object.
     * A different overload may be chosen when passing the object to a method.
     """
+    if reflection_policy is not None:
+        target = reflection_cast_target(cls)
+        if target is not None and not reflection_policy("cast", target, None):
+            raise PermissionError(f"reflection policy denied cast to {target}")
     sig = jni_sig(cls)
     if sig[0] not in "L[":
         raise TypeError(f"{type(cls).__name__} object does not specify a Java class or array type")
