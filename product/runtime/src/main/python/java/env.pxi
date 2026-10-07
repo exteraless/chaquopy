@@ -603,20 +603,34 @@ cdef class JNIRef(object):
             return NULL
 
 
+cdef Py_ssize_t live_global_refs = 0
+cdef Py_ssize_t live_weak_refs = 0
+cdef Py_ssize_t live_local_refs = 0
+
+
+def jni_ref_counts():
+    return {"global": live_global_refs, "weak": live_weak_refs, "local": live_local_refs}
+
+
 @cython.final
 cdef class GlobalRef(object):
     @staticmethod
     cdef GlobalRef create(JNIEnv *env, jobject obj):
+        global live_global_refs
         gr = GlobalRef()
         if obj:
             gr.obj = env[0].NewGlobalRef(env, obj)
+            if gr.obj:
+                live_global_refs += 1
         return gr
 
     def __dealloc__(self):
+        global live_global_refs
         cdef JNIEnv *j_env
         if self.obj:
             j_env = get_jnienv()
             j_env[0].DeleteGlobalRef(j_env, self.obj)
+            live_global_refs -= 1
         # The __dealloc__() method of the superclass will be called automatically.
 
     cdef GlobalRef global_ref(self):
@@ -636,14 +650,19 @@ cdef class LocalRef(JNIRef):
     # warning "Attempt to remove non-JNI local reference". Use `LocalRef.create` instead.
     @staticmethod
     cdef LocalRef adopt(JNIEnv *env, jobject obj):
+        global live_local_refs
         lr = LocalRef()
         lr.env = env
         lr.obj = obj
+        if obj:
+            live_local_refs += 1
         return lr
 
     def __dealloc__(self):
+        global live_local_refs
         if self.obj:
             self.env[0].DeleteLocalRef(self.env, self.obj)
+            live_local_refs -= 1
         # The __dealloc__() method of the superclass will be called automatically.
 
 
@@ -651,16 +670,21 @@ cdef class LocalRef(JNIRef):
 cdef class WeakRef(JNIRef):
     @staticmethod
     cdef WeakRef create(JNIEnv *env, jobject obj):
+        global live_weak_refs
         wr = WeakRef()
         if obj:
             wr.obj = env[0].NewWeakGlobalRef(env, obj)
+            if wr.obj:
+                live_weak_refs += 1
         return wr
 
     def __dealloc__(self):
+        global live_weak_refs
         cdef JNIEnv *j_env
         if self.obj:
             j_env = get_jnienv()
             j_env[0].DeleteWeakGlobalRef(j_env, self.obj)
+            live_weak_refs -= 1
         # The __dealloc__() method of the superclass will be called automatically.
 
     cdef WeakRef weak_ref(self):

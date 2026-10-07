@@ -14,6 +14,7 @@ from .test_overload import *            # noqa: F401, F403
 from .test_proxy import *               # noqa: F401, F403
 from .test_reflect import *             # noqa: F401, F403
 from .test_reflection_gate import *    # noqa: F401, F403
+from .test_ref_leaks import *           # noqa: F401, F403
 from .test_signatures import *          # noqa: F401, F403
 from .test_static_proxy import *        # noqa: F401, F403
 from .test_thread import *              # noqa: F401, F403
