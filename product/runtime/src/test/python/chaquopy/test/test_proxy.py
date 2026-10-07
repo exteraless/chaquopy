@@ -129,6 +129,28 @@ class TestProxy(FilterWarningsCase):
 
     # Using Python attributes before calling __init__ is covered by test_gc; this test covers
     # use as a Java object.
+    def test_dead_wrapper_releases_weak_ref(self):
+        class A(dynamic_proxy(TP.Adder)):
+            def add(self, x):
+                return x + 1
+
+        a = A()
+        d = a.__dict__
+        self.assertIn("_chaquopy_this", d)
+        TP.a1 = a
+        a = None
+        self.assertNotIn("_chaquopy_this", d)
+
+        a = TP.a1
+        self.assertIs(d, a.__dict__)
+        self.assertIn("_chaquopy_this", d)
+        TP.a2 = a
+        a = None
+        self.assertNotIn("_chaquopy_this", d)
+        self.assertTrue(TP.a1.equals(TP.a2))
+        self.assertEqual(5, cast(TP.Adder, TP.a1).add(4))
+        TP.a1 = TP.a2 = None
+
     def test_use_before_init(self):
         class A(dynamic_proxy(TP.Adder)):
             def __init__(self):

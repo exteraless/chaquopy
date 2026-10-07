@@ -383,19 +383,25 @@ cdef plain_instance(cls, JNIRef instance, bint array):
 cdef set_this(self, GlobalRef this, real_obj=None):
     global PyProxy
     with class_lock:
-        is_proxy = isinstance(type(self), ProxyClass)
-        PyObject_GenericSetAttr(self, "_chaquopy_this", this.weak_ref() if is_proxy else this)
-        PyObject_GenericSetAttr(self, "_chaquopy_real_obj", real_obj)
+        if not isinstance(type(self), ProxyClass):
+            PyObject_GenericSetAttr(self, "_chaquopy_this", this)
+            PyObject_GenericSetAttr(self, "_chaquopy_real_obj", real_obj)
+            instance_cache.set((type(self), this), self)
+            return
 
-        if is_proxy and not (isinstance(type(self), DynamicProxyClass) and
-                             dynamic_proxy_attach_dict(self, this)):
+        weak = this.weak_ref()
+        PyObject_GenericSetAttr(self, "_chaquopy_this", weak)
+        PyObject_GenericSetAttr(self, "_chaquopy_real_obj", real_obj)
+        if not (isinstance(type(self), DynamicProxyClass) and
+                dynamic_proxy_attach_dict(self, this)):
             java_dict = self._chaquopyGetDict()
             if java_dict is None:
                 self._chaquopySetDict(self.__dict__)
             else:
                 self.__dict__ = java_dict
-
-        instance_cache.set((type(self), this), self)
+        PyObject_GenericSetAttr(self, "_chaquopy_this", weak)
+        instance_cache.set_proxy((type(self), this), self,
+                                 PyObject_GenericGetAttr(self, "__dict__"), weak)
 
 
 # This isn't done during module initialization because we don't have a JVM yet, and we don't
@@ -1413,11 +1419,19 @@ cdef class InstanceCache(object):
     cdef set(self, key, value):
         self.data[key] = PyWeakref_NewRef(value, InstanceCacheRemover.create(self.data, key))
 
+    cdef set_proxy(self, key, value, dict proxy_dict, proxy_this):
+        cdef InstanceCacheRemover remover = InstanceCacheRemover.create(self.data, key)
+        remover.proxy_dict = proxy_dict
+        remover.proxy_this = proxy_this
+        self.data[key] = PyWeakref_NewRef(value, remover)
+
 
 @cython.final
 cdef class InstanceCacheRemover(object):
     cdef dict data
     cdef object key
+    cdef dict proxy_dict
+    cdef object proxy_this
 
     @staticmethod
     cdef InstanceCacheRemover create(dict data, key):
@@ -1429,6 +1443,11 @@ cdef class InstanceCacheRemover(object):
     def __call__(self, wr):
         if self.data.get(self.key) is wr:
             del self.data[self.key]
+        if self.proxy_dict is not None:
+            if self.proxy_dict.get("_chaquopy_this") is self.proxy_this:
+                del self.proxy_dict["_chaquopy_this"]
+            self.proxy_dict = None
+            self.proxy_this = None
 
 
 def set_call_fallback(fallback):
