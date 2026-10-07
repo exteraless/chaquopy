@@ -45,7 +45,22 @@ __all__ = [
     "dynamic_proxy", "static_proxy", "constructor", "method", "Override",  # proxy.pxi
     "jarray",                                                              # array.pxi
     "set_import_enabled",                                                  # import.pxi
+    "set_reflection_policy", "get_reflection_policy",                      # this file
 ]
+
+
+cdef object reflection_policy = None
+
+
+def set_reflection_policy(policy):
+    global reflection_policy
+    if policy is not None and not callable(policy):
+        raise TypeError("reflection policy must be callable or None")
+    reflection_policy = policy
+
+
+def get_reflection_policy():
+    return reflection_policy
 
 
 # Monkey-patching this internal method isn't ideal, but we want to detach as late as possible

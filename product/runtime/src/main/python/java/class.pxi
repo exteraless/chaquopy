@@ -25,7 +25,8 @@ cdef set special_attrs = set(dir(type) +                        # Special Python
                               "_chaquopy_this",                 # Chaquopy instance attributes
                               "_chaquopy_real_obj",             #
                               "_chaquopy_absent",               # Names known not to be Java members
-                              "_chaquopy_abstract"])            # Cached abstract modifier
+                              "_chaquopy_abstract",             # Cached abstract modifier
+                              "_chaquopy_gate_target"])         # Cached reflection gate target
 
 
 # If you already have a Class object, use one of these functions rather than calling `jclass`
@@ -762,6 +763,185 @@ cdef class JavaField(JavaSimpleMember):
             raise Exception(f"Invalid definition for {self.fqn()}: '{self.definition}'")
 
 
+cdef frozenset REFLECTION_FIELD_GETTERS = frozenset({
+    "get", "getBoolean", "getByte", "getChar", "getShort", "getInt",
+    "getLong", "getFloat", "getDouble",
+})
+
+cdef frozenset REFLECTION_FIELD_SETTERS = frozenset({
+    "set", "setBoolean", "setByte", "setChar", "setShort", "setInt",
+    "setLong", "setFloat", "setDouble",
+})
+
+cdef frozenset REFLECTION_LOOKUP_ACTIONS = frozenset({
+    "findVirtual", "findSpecial", "findStatic", "findConstructor", "findGetter",
+    "findSetter", "findField", "findProperty", "findClass", "findVarHandle",
+    "unreflect", "unreflectConstructor", "unreflectField", "unreflectGetter",
+    "unreflectSetter", "unreflectSpecial", "unreflectVarHandle", "in", "bind",
+})
+
+cdef dict REFLECTION_CLASS_OPS = {
+    "forName": "Class.forName",
+    "newInstance": "Class.newInstance",
+    "getDeclaredField": "Class.getDeclaredField",
+    "getField": "Class.getField",
+    "getDeclaredMethod": "Class.getDeclaredMethod",
+    "getMethod": "Class.getMethod",
+    "getDeclaredConstructor": "Class.getDeclaredConstructor",
+    "getConstructor": "Class.getConstructor",
+}
+
+cdef frozenset REFLECTION_MEMBER_OPS = frozenset({
+    "AccessibleObject.setAccessible", "Method.invoke", "Constructor.newInstance",
+    "Field.get", "Field.set",
+})
+
+
+cdef reflection_op_name(str cls_name, str name):
+    if name == "loadClass":
+        return "ClassLoader.loadClass"
+    if name == "setAccessible":
+        return "AccessibleObject.setAccessible"
+    if cls_name == "java.lang.Class":
+        return REFLECTION_CLASS_OPS.get(name)
+    if cls_name == "java.lang.reflect.Method" and name == "invoke":
+        return "Method.invoke"
+    if cls_name == "java.lang.reflect.Constructor" and name == "newInstance":
+        return "Constructor.newInstance"
+    if cls_name == "java.lang.reflect.Field":
+        if name in REFLECTION_FIELD_GETTERS:
+            return "Field.get"
+        if name in REFLECTION_FIELD_SETTERS:
+            return "Field.set"
+        return None
+    if cls_name == "java.lang.reflect.Proxy" and \
+       name in ("newProxyInstance", "getProxyClass"):
+        return f"Proxy.{name}"
+    if cls_name == "java.lang.invoke.MethodHandles" and name == "privateLookupIn":
+        return "MethodHandles.privateLookupIn"
+    if cls_name == "java.lang.invoke.MethodHandles$Lookup" and \
+       name in REFLECTION_LOOKUP_ACTIONS:
+        return "MethodHandles.Lookup"
+    if cls_name == "sun.misc.Unsafe" or cls_name == "jdk.internal.misc.Unsafe":
+        return "Unsafe"
+    return None
+
+
+cdef reflection_class_name(x):
+    if isinstance(x, JavaClass):
+        return cls_fullname(x)
+    try:
+        if isinstance(x, Class):
+            return str(x.getName())
+    except Exception:
+        pass
+    return None
+
+
+def reflection_arg_name(args):
+    for arg in args:
+        if isinstance(arg, str):
+            return arg
+    return None
+
+
+def reflection_member_info(obj):
+    try:
+        return (str(obj.getDeclaringClass().getName()), str(obj.getName()))
+    except Exception:
+        return (cls_fullname(type(obj)), None)
+
+
+def reflection_class_target(obj):
+    try:
+        return str(obj.getName())
+    except Exception:
+        return cls_fullname(type(obj))
+
+
+def reflection_sequence_names(seq):
+    names = []
+    try:
+        iterator = iter(seq)
+    except TypeError:
+        name = reflection_class_name(seq)
+        return (name,) if name is not None else ()
+    for item in iterator:
+        name = reflection_class_name(item)
+        if name is not None:
+            names.append(name)
+    return tuple(names)
+
+
+def reflection_lookup_target(args):
+    if not args:
+        return (None, None)
+    arg = args[0]
+    if isinstance(arg, str):
+        return (arg, None)
+    name = reflection_class_name(arg)
+    if name is not None:
+        member = None
+        if len(args) > 1 and isinstance(args[1], str):
+            member = args[1]
+        return (name, member)
+    return reflection_member_info(arg)
+
+
+cdef reflection_cached_gate(obj):
+    if obj is None:
+        return None
+    try:
+        return PyObject_GenericGetAttr(obj, "_chaquopy_gate_target")
+    except AttributeError:
+        return None
+
+
+cdef reflection_store_gate(obj, value):
+    if obj is None:
+        return
+    try:
+        PyObject_GenericSetAttr(obj, "_chaquopy_gate_target", value)
+    except Exception:
+        pass
+
+
+cdef reflection_format_target(target):
+    if isinstance(target, tuple):
+        return "[" + ", ".join([str(item) for item in target]) + "]"
+    return str(target)
+
+
+def reflection_receiver_target(op, obj, args):
+    cached = reflection_cached_gate(obj)
+    if cached is not None:
+        if isinstance(cached, tuple):
+            target, member = cached
+            if op in ("Class.getDeclaredField", "Class.getField", "Class.getDeclaredMethod",
+                      "Class.getMethod"):
+                member = reflection_arg_name(args)
+            return target, member
+        if op in REFLECTION_MEMBER_OPS:
+            return cached, None
+        return cached, reflection_arg_name(args)
+    if op in REFLECTION_MEMBER_OPS:
+        target, member = reflection_member_info(obj)
+        reflection_store_gate(obj, (target, member))
+        return target, member
+    target = reflection_class_target(obj)
+    if op in ("Class.newInstance", "Class.getDeclaredConstructor", "Class.getConstructor"):
+        reflection_store_gate(obj, (target, None))
+        return target, None
+    reflection_store_gate(obj, target)
+    return target, reflection_arg_name(args)
+
+
+def reflection_proxy_target(args):
+    if len(args) < 2:
+        return ()
+    return reflection_sequence_names(args[1])
+
+
 cdef class JavaMethod(JavaSimpleMember):
     cdef reflected  # See call_proxy_method
     cdef jmethodID j_method
@@ -773,6 +953,7 @@ cdef class JavaMethod(JavaSimpleMember):
     cdef bytes arg_codes
     cdef char ret_code
     cdef bint copy_back
+    cdef object reflect_op
 
     def __repr__(self):
         return f"<JavaMethod {self.format_declaration()}>"
@@ -785,6 +966,7 @@ cdef class JavaMethod(JavaSimpleMember):
     def __init__(self, cls, name, definition_or_reflected, *, static=False, final=False,
                  abstract=False, varargs=False):
         self.is_constructor = (name == "<init>")
+        self.reflect_op = reflection_op_name(cls_fullname(cls), name)
         if isinstance(definition_or_reflected, str):
             definition = definition_or_reflected
             self.return_sig, self.args_sig = split_method_sig(definition)
@@ -861,6 +1043,8 @@ cdef class JavaMethod(JavaSimpleMember):
         return self.invoke_checked(env, obj, self.check_arity(env, args), virtual)
 
     cdef invoke_checked(self, CQPEnv env, obj, tuple args, bint virtual):
+        if self.reflect_op is not None and reflection_policy is not None:
+            gate_reflection(self, obj, args)
         cdef list p2j_args = [p2j(env.j_env, argtype, arg)
                               for argtype, arg in zip(self.args_sig, args)]
 
@@ -1037,6 +1221,26 @@ cdef class JavaMethod(JavaSimpleMember):
             return j2p(env.j_env, env.CallStaticObjectMethodA(j_klass, self.j_method, j_args))
         else:
             raise Exception(f"Invalid definition for {self.fqn()}: '{self.return_sig}'")
+
+
+cdef gate_reflection(JavaMethod jm, obj, tuple args):
+    op = jm.reflect_op
+    if op == "Class.forName" or op == "ClassLoader.loadClass":
+        target = reflection_arg_name(args)
+        member = None
+    elif op == "Proxy.newProxyInstance" or op == "Proxy.getProxyClass":
+        target = reflection_proxy_target(args)
+        member = None
+    elif op == "MethodHandles.privateLookupIn" or op == "MethodHandles.Lookup":
+        target, member = reflection_lookup_target(args)
+    elif op == "Unsafe":
+        target = cls_fullname(jm.cls)
+        member = jm.name
+    else:
+        target, member = reflection_receiver_target(op, obj, args)
+    if not reflection_policy(op, target, member):
+        raise PermissionError(f"reflection policy denied {op} on "
+                              f"{reflection_format_target(target)}")
 
 
 cdef class JavaMultipleMethod(JavaMember):
