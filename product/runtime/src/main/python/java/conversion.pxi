@@ -221,6 +221,13 @@ cdef unicode j2p_string(JNIEnv *j_env, JNIRef j_string):
 # To avoid deadlocks, it must not do anything which requires a lock, including calling jclass()
 # or creating jclass instances.
 cdef j2p_pyobject(JNIEnv *j_env, jobject jpyobject):
+    obj = j2p_pyobject_raw(j_env, jpyobject)
+    if type(obj) is ProxyCallee:
+        return (<ProxyCallee>obj).resolve()
+    return obj
+
+
+cdef j2p_pyobject_raw(JNIEnv *j_env, jobject jpyobject):
     if jpyobject == NULL:
         return None
 

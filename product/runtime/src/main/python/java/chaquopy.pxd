@@ -7,6 +7,7 @@ from .jni cimport *
 cdef j2p(JNIEnv *j_env, JNIRef j_object)
 cdef unicode j2p_string(JNIEnv *env, JNIRef j_string)
 cdef j2p_pyobject(JNIEnv *env, jobject jpyobject)
+cdef j2p_pyobject_raw(JNIEnv *env, jobject jpyobject)
 
 cdef p2j(JNIEnv *j_env, definition, obj, bint autobox=?)
 cdef JNIRef p2j_string(JNIEnv *env, unicode s)
@@ -50,3 +51,13 @@ cdef class WeakRef(JNIRef):
 
 cdef JNIEnv *get_jnienv() except NULL
 cdef set_jvm(JavaVM *new_jvm)
+
+# === proxy ===================================================================
+
+cdef class ProxyCallee(object):
+    cdef list pending
+    cdef object weak
+    cdef resolve(self)
+
+cdef proxy_callee_wrap(obj)
+cdef proxy_callee_take(obj)

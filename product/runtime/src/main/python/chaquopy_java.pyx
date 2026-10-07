@@ -136,7 +136,7 @@ cdef public jlong Java_com_chaquo_python_Python_getModuleNative \
 cdef public void Java_com_chaquo_python_PyObject_closeNative \
     (JNIEnv *env, jobject this) noexcept with gil:
     try:
-        Py_DECREF(j2p_pyobject(env, this))  # Matches with INCREF in p2j_pyobject.
+        Py_DECREF(j2p_pyobject_raw(env, this))  # Matches with INCREF in p2j_pyobject.
         return
     except BaseException:
         se = SavedException()
@@ -146,7 +146,7 @@ cdef public void Java_com_chaquo_python_PyObject_closeNative \
 cdef public jlong Java_com_chaquo_python_PyObject_fromJavaNative \
     (JNIEnv *env, jobject klass, jobject o) noexcept with gil:
     try:
-        return p2j_pyobject(env, j2p(env, LocalRef.create(env, o)))
+        return p2j_pyobject(env, proxy_callee_wrap(j2p(env, LocalRef.create(env, o))))
     except BaseException:
         se = SavedException()
     se.throw(env)
@@ -319,7 +319,7 @@ cdef public jlong Java_com_chaquo_python_PyObject_callThrowsNative \
 cdef public jlong Java_com_chaquo_python_PyObject_callAttrThrowsNative \
     (JNIEnv *env, jobject this, jobject j_key, jobject jargs) noexcept with gil:
     try:
-        attr = getattr(j2p_pyobject(env, this),
+        attr = getattr(proxy_callee_take(j2p_pyobject_raw(env, this)),
                        j2p_string(env, LocalRef.create(env, j_key)))
         return call(env, attr, jargs)
     except BaseException:

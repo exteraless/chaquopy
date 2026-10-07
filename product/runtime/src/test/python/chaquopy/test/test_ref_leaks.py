@@ -109,6 +109,35 @@ class TestRefLeaks(FilterWarningsCase):
                 Collections.sort(lst, Cmp())
         self.assertNoLeak(scenario)
 
+    def test_fresh_proxy_callbacks(self):
+        src = ArrayList()
+        src.add(1)
+        def scenario(n):
+            for _ in range(n):
+                src.forEach(Counter())
+        self.assertNoLeak(scenario)
+
+    def test_java_only_proxy_keeps_state(self):
+        seen = []
+
+        class Tracker(dynamic_proxy(Comparator)):
+            def compare(self, a, b):
+                self.calls = getattr(self, "calls", 0) + 1
+                seen.append(self.calls)
+                return (a > b) - (a < b)
+
+        rc = Collections.reverseOrder(Tracker())
+        lst = ArrayList()
+        for i in range(20):
+            lst.add(i)
+        def scenario(n):
+            for _ in range(max(1, n // 20)):
+                Collections.shuffle(lst)
+                Collections.sort(lst, rc)
+        self.assertNoLeak(scenario)
+        self.assertEqual(seen, list(range(1, len(seen) + 1)))
+        self.assertEqual(19, lst.get(0))
+
     def test_objects_and_calls(self):
         def scenario(n):
             m = HashMap()

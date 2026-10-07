@@ -136,6 +136,45 @@ cdef bint dynamic_proxy_attach_dict(self, JNIRef this) except -1:
     return True
 
 
+cdef class ProxyCallee(object):
+    cdef resolve(self):
+        if self.pending:
+            return self.pending[-1]
+        target = self.weak() if self.weak is not None else None
+        if target is None:
+            raise ValueError("PyObject is closed")
+        return target
+
+
+cdef proxy_callee_wrap(obj):
+    if not isinstance(type(obj), DynamicProxyClass):
+        return obj
+    d = PyObject_GenericGetAttr(obj, "__dict__")
+    cdef ProxyCallee callee
+    found = d.get("_chaquopy_callee")
+    if type(found) is ProxyCallee:
+        callee = <ProxyCallee>found
+    else:
+        callee = ProxyCallee.__new__(ProxyCallee)
+        callee.pending = []
+        d["_chaquopy_callee"] = callee
+    if callee.weak is None or callee.weak() is not obj:
+        callee.weak = PyWeakref_NewRef(obj, None)
+    if len(callee.pending) >= 16:
+        del callee.pending[0]
+    callee.pending.append(obj)
+    return callee
+
+
+cdef proxy_callee_take(obj):
+    if type(obj) is not ProxyCallee:
+        return obj
+    cdef ProxyCallee callee = <ProxyCallee>obj
+    if callee.pending:
+        return callee.pending.pop()
+    return callee.resolve()
+
+
 def DynamicProxy_init(self):
     global PyInvocationHandler
     JavaObject.__init__(self, PyInvocationHandler(type(self)))
