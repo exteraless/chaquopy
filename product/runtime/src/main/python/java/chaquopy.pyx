@@ -46,17 +46,54 @@ __all__ = [
     "jarray",                                                              # array.pxi
     "set_import_enabled",                                                  # import.pxi
     "set_reflection_policy", "get_reflection_policy",                      # this file
+    "seal_reflection_policy",                                              # this file
 ]
 
 
 cdef object reflection_policy = None
+cdef bint reflection_policy_sealed = False
+
+cdef tuple DENIED_CLASS_PREFIXES = (
+    "org.telegram.ui.Wallet.",
+    "org.telegram.tgnet.tl.TL_wallet",
+    "org.telegram.tgnet.tl.TL_toncenter",
+    "java.security.KeyStore",
+    "android.security.keystore",
+)
+
+
+cdef bint class_denied(name):
+    if not isinstance(name, str):
+        return False
+    cdef str normalized = reflection_normalize_name(name)
+    return normalized is not None and normalized.startswith(DENIED_CLASS_PREFIXES)
+
+
+cdef bint target_denied(target):
+    if isinstance(target, tuple):
+        for item in target:
+            if class_denied(item):
+                return True
+        return False
+    return class_denied(target)
+
+
+cdef deny_class(name):
+    raise PermissionError(f"{reflection_normalize_name(name)} is not available from Python")
 
 
 def set_reflection_policy(policy):
     global reflection_policy
+    if reflection_policy_sealed:
+        raise PermissionError("reflection policy is sealed")
     if policy is not None and not callable(policy):
         raise TypeError("reflection policy must be callable or None")
     reflection_policy = policy
+
+
+def seal_reflection_policy():
+    global reflection_policy_sealed
+    reflection_policy_sealed = True
 
 
 def get_reflection_policy():

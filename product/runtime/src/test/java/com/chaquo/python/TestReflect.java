@@ -266,4 +266,28 @@ public class TestReflect {
             public String b() { return "ABDefault.b"; }
         }
     }
+
+    public static class DeniedClasses {
+        public static Object keyStore() throws Exception {
+            return java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType());
+        }
+
+        public static Class<?> keyStoreClass() {
+            return java.security.KeyStore.class;
+        }
+
+        public static Object[] keyStoreArray() throws Exception {
+            return new Object[] { "plain", keyStore() };
+        }
+
+        public static java.util.List<Object> keyStoreList() throws Exception {
+            java.util.List<Object> list = new java.util.ArrayList<>();
+            list.add(keyStore());
+            return list;
+        }
+
+        public static String keyStoreType() {
+            return java.security.KeyStore.getDefaultType();
+        }
+    }
 }

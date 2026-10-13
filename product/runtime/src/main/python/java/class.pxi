@@ -84,6 +84,8 @@ class JavaClass(type):
         java_name = cls_dict.pop("_chaquopy_name", None)
         if not java_name:
             raise TypeError("Java classes can only be inherited using static_proxy or dynamic_proxy")
+        if class_denied(java_name):
+            deny_class(java_name)
 
         if "_chaquopy_j_klass" not in cls_dict:
             cls_dict["_chaquopy_j_klass"] = CQPEnv().FindClass(java_name)
@@ -1060,7 +1062,7 @@ cdef class JavaMethod(JavaSimpleMember):
         return self.invoke_checked(env, obj, self.check_arity(env, args), virtual)
 
     cdef invoke_checked(self, CQPEnv env, obj, tuple args, bint virtual):
-        if self.reflect_op is not None and reflection_policy is not None:
+        if self.reflect_op is not None:
             gate_reflection(self, obj, args)
         cdef list p2j_args = [p2j(env.j_env, argtype, arg)
                               for argtype, arg in zip(self.args_sig, args)]
@@ -1255,6 +1257,11 @@ cdef gate_reflection(JavaMethod jm, obj, tuple args):
         member = jm.name
     else:
         target, member = reflection_receiver_target(op, obj, args)
+    if target_denied(target):
+        raise PermissionError(f"{op} on {reflection_format_target(target)} "
+                              f"is not available from Python")
+    if reflection_policy is None:
+        return
     if not reflection_policy(op, target, member):
         raise PermissionError(f"reflection policy denied {op} on "
                               f"{reflection_format_target(target)}")

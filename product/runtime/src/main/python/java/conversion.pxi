@@ -86,6 +86,10 @@ cdef j2p(JNIEnv *j_env, JNIRef j_object):
     cdef KlassInfo info = klass_info(j_env, j_object.obj)
     cdef int kind = info.kind
     if kind == KIND_OBJECT:
+        if info.is_klass:
+            name = klass_sig(CQPEnv.wrap(j_env), j_object)
+            if class_denied(name):
+                deny_class(name)
         cls = info.python_class()
         if info.plain:
             return plain_instance(cls, j_object, info.sig[0] == "[")
@@ -119,6 +123,7 @@ cdef class KlassInfo(object):
     cdef unsigned long cls_gen
     cdef bint plain
     cdef bint dyn_proxy
+    cdef bint is_klass
 
     @staticmethod
     cdef KlassInfo create(CQPEnv env, JNIRef j_klass):
@@ -126,6 +131,7 @@ cdef class KlassInfo(object):
         self.klass = j_klass.global_ref()
         self.sig = sig = klass_sig(env, j_klass)
         self.kind = KIND_OBJECT
+        self.is_klass = sig == 'Ljava/lang/Class;'
         if sig == 'Ljava/lang/String;':
             self.kind = KIND_STRING
         elif sig == 'Lcom/chaquo/python/PyObject;':

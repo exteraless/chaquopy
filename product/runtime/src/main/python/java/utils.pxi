@@ -75,6 +75,8 @@ cpdef cast(cls, obj):
     sig = jni_sig(cls)
     if sig[0] not in "L[":
         raise TypeError(f"{type(cls).__name__} object does not specify a Java class or array type")
+    if class_denied(sig):
+        deny_class(sig)
 
     if obj is None or isinstance(obj, NoneCast):
         with class_lock:
